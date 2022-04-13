@@ -22,6 +22,7 @@ from src.optimizers import (
 
 import wandb
 
+
 LOG_WANDB = True
 
 
@@ -54,6 +55,10 @@ if __name__ == '__main__':
     cfg = config.evaluate(cfg, len_params)
 
     for trial in range(cfg['trials']):
+        current_seed = cfg["seed"] + trial
+        np.random.seed(current_seed)
+        torch.manual_seed(current_seed)
+
         if LOG_WANDB:
             wandb_run = wandb.init(
                 project=cfg["wandb_config"]["project_name"],
@@ -81,6 +86,7 @@ if __name__ == '__main__':
             manipulate_state=state_norm,
             manipulate_reward=reward_func,
         )
+        objective_env.env.seed(current_seed)
 
         params, calls_in_iteration = loop(
             params_init=torch.zeros(len_params, dtype=torch.float32),
@@ -96,6 +102,9 @@ if __name__ == '__main__':
         parameters[trial] = torch.cat(params).numpy()
         calls[trial] = calls_in_iteration
         timesteps_to_reward[trial] = objective_env.timesteps_to_reward
+
+        if LOG_WANDB:
+            wandb_run.finish()
 
     directory = cfg['out_dir']
     if not os.path.exists(directory):

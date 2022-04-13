@@ -6,47 +6,49 @@ import botorch
 
 from src.cholesky import one_step_cholesky
 
+from gpytorch.utils.cholesky import psd_safe_cholesky
+
 
 class GradientInformation(botorch.acquisition.AnalyticAcquisitionFunction):
-    '''Acquisition function to sample points for gradient information.
+    """Acquisition function to sample points for gradient information.
 
     Attributes:
         model: Gaussian process model that supplies the Jacobian (e.g. DerivativeExactGPSEModel).
-    '''
+    """
 
     def __init__(self, model):
-        '''Inits acquisition function with model.'''
+        """Inits acquisition function with model."""
         super().__init__(model)
 
     def update_theta_i(self, theta_i: torch.Tensor):
-        '''Updates the current parameters.
+        """Updates the current parameters.
 
         This leads to an update of K_xX_dx.
 
         Args:
             theta_i: New parameters.
-        '''
+        """
         if not torch.is_tensor(theta_i):
             theta_i = torch.tensor(theta_i)
         self.theta_i = theta_i
         self.update_K_xX_dx()
 
     def update_K_xX_dx(self):
-        '''When new x is given update K_xX_dx.'''
+        """When new x is given update K_xX_dx."""
         # Pre-compute large part of K_xX_dx.
         X = self.model.train_inputs[0]
         x = self.theta_i.view(-1, self.model.D)
         self.K_xX_dx_part = self._get_KxX_dx(x, X)
 
     def _get_KxX_dx(self, x, X) -> torch.Tensor:
-        '''Computes the analytic derivative of the kernel K(x,X) w.r.t. x.
+        """Computes the analytic derivative of the kernel K(x,X) w.r.t. x.
 
         Args:
             x: (n x D) Test points.
 
         Returns:
             (n x D) The derivative of K(x,X) w.r.t. x.
-        '''
+        """
         N = X.shape[0]
         n = x.shape[0]
         K_xX = self.model.covar_module(x, X).evaluate()
@@ -63,14 +65,14 @@ class GradientInformation(botorch.acquisition.AnalyticAcquisitionFunction):
     # TODO: nicer batch-update for batch of thetas.
     @botorch.utils.transforms.t_batch_mode_transform(expected_q=1)
     def forward(self, thetas: torch.Tensor) -> torch.Tensor:
-        '''Evaluate the acquisition function on the candidate set thetas.
+        """Evaluate the acquisition function on the candidate set thetas.
 
         Args:
             thetas: A (b) x D-dim Tensor of (b) batches with a d-dim theta points each.
 
         Returns:
             A (b)-dim Tensor of acquisition function values at the given theta points.
-        '''
+        """
         sigma_n = self.model.likelihood.noise_covar.noise
         D = self.model.D
         X = self.model.train_inputs[0]
@@ -107,6 +109,84 @@ class GradientInformation(botorch.acquisition.AnalyticAcquisitionFunction):
         return -torch.cat(variances, dim=0)
 
 
+class DownhillQuadratic(GradientInformation):
+    def update_theta_i(self, theta_i: torch.Tensor):
+        super().update_theta_i(theta_i)
+
+        self.mean_d, _ = self.model.posterior_derivative(self.theta_i)
+
+    def forward(self, x):
+        sigma_f = self.model.covar_module.outputscale.detach()
+        sigma_n = self.model.likelihood.noise_covar.noise
+        D = self.model.D
+        X = self.model.train_inputs[0]
+
+        x = x.view(-1, D)
+
+        # Compute K_Xθ, K_θθ (do not forget to add noise).
+        K_Xθ = self.model.covar_module(X, x).evaluate()
+        K_θθ = self.model.covar_module(x).evaluate() + sigma_n * torch.eye(
+            K_Xθ.shape[-1]
+        ).to(x)
+
+        # Get Cholesky factor.
+        L = one_step_cholesky(
+            top_left=self.model.get_L_lower().mT,
+            K_Xθ=K_Xθ,
+            K_θθ=K_θθ,
+            A_inv=self.model.get_KXX_inv(),
+        )
+
+        # Get K_XX_inv.
+        K_XX_inv = torch.cholesky_inverse(L, upper=True)
+
+        # get K_xX_dx
+        K_xθ_dx = self._get_KxX_dx(self.theta_i.view(-1, D), x)
+        K_xX_dx = sigma_f * torch.cat([self.K_xX_dx_part, K_xθ_dx], dim=-1)
+
+        # Compute_variance.
+        covar_xstar_xstar_condx = (
+            self.model._get_Kxx_dx2() - K_xX_dx @ K_XX_inv @ K_xX_dx.mT
+        )
+
+        L_xstar_xstar_condx = psd_safe_cholesky(covar_xstar_xstar_condx)
+
+        # try:
+        #     L_xstar_xstar_condx = psd_safe_cholesky(covar_xstar_xstar_condx)
+        # except:
+        #     torch.save(self.model.train_inputs[0], "notebooks/Misc/train_x.pt")
+        #     torch.save(self.model.train_targets, "notebooks/Misc/train_y.pt")
+        #
+        #     torch.save(self.theta_i, "notebooks/Misc/theta_i.pt")
+        #     torch.save(x, "notebooks/Misc/x.pt")
+        #
+        #     torch.save(self.model.covar_module.base_kernel.lengthscale.detach(), "notebooks/Misc/lengthscale.pt")
+        #     torch.save(self.model.covar_module.outputscale.detach(), "notebooks/Misc/outputscale.pt")
+        #     torch.save(self.model.likelihood.noise.detach(), "notebooks/Misc/noise.pt")
+        #     quit()
+        #
+        #     from IPython.core.debugger import set_trace
+        #     set_trace()
+
+        covar_xstar_x = sigma_f * (
+            K_xθ_dx - self.K_xX_dx_part @ self.model.get_KXX_inv() @ K_Xθ
+        )
+        covar_x_x = K_θθ - K_Xθ.mT @ self.model.get_KXX_inv() @ K_Xθ
+
+        # from Kaiwen
+        Lxx = psd_safe_cholesky(covar_x_x)
+        A = torch.triangular_solve(covar_xstar_x.mT, Lxx, upper=False).solution.mT
+
+        LinvMu = torch.triangular_solve(
+            self.mean_d.unsqueeze(-1), L_xstar_xstar_condx, upper=False
+        ).solution
+        LinvA = torch.triangular_solve(A, L_xstar_xstar_condx, upper=False).solution
+
+        # raise ValueError
+
+        return torch.atleast_1d(LinvMu.square().sum() + LinvA.square().sum())
+
+
 def optimize_acqf_custom_bo(
     acq_func: botorch.acquisition.AcquisitionFunction,
     bounds: torch.Tensor,
@@ -114,7 +194,7 @@ def optimize_acqf_custom_bo(
     num_restarts: int,
     raw_samples: int,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    '''Function to optimize the GradientInformation acquisition function for custom Bayesian optimization.
+    """Function to optimize the GradientInformation acquisition function for custom Bayesian optimization.
 
     Args:
         acq_function: An AcquisitionFunction.
@@ -127,14 +207,14 @@ def optimize_acqf_custom_bo(
         A two-element tuple containing:
             - a q x D-dim tensor of generated candidates.
             - a tensor of associated acquisition values.
-    '''
+    """
     candidates, acq_value = botorch.optim.optimize_acqf(
         acq_function=acq_func,
         bounds=bounds,
         q=q,  # Analytic acquisition function.
         num_restarts=num_restarts,
         raw_samples=raw_samples,  # Used for initialization heuristic.
-        options={'nonnegative': True, 'batch_limit': 5},
+        options={"nonnegative": True, "batch_limit": 5},
         return_best_only=True,
         sequential=False,
     )
@@ -143,9 +223,10 @@ def optimize_acqf_custom_bo(
     return new_x, acq_value
 
 
-def optimize_acqf_vanilla_bo(acq_func: botorch.acquisition.AcquisitionFunction,
-                             bounds: torch.Tensor) -> torch.Tensor:
-    '''Function to optimize the acquisition function for vanilla Bayesian optimization.
+def optimize_acqf_vanilla_bo(
+    acq_func: botorch.acquisition.AcquisitionFunction, bounds: torch.Tensor
+) -> torch.Tensor:
+    """Function to optimize the acquisition function for vanilla Bayesian optimization.
 
     For instance for expected improvement (botorch.acquisition.analytic.ExpectedImprovement).
 
@@ -155,7 +236,7 @@ def optimize_acqf_vanilla_bo(acq_func: botorch.acquisition.AcquisitionFunction,
 
     Returns:
         A q x D-dim tensor of generated candidates.
-    '''
+    """
     candidates, _ = botorch.optim.optimize_acqf(
         acq_function=acq_func,
         bounds=bounds,

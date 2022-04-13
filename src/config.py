@@ -10,6 +10,7 @@ from src.optimizers import (
     CMAES,
     VanillaBayesianOptimization,
     BayesianGradientAscent,
+    MPDOptimizer,
 )
 from src.model import ExactGPSEModel, DerivativeExactGPSEModel
 from src.acquisition_function import optimize_acqf_vanilla_bo, optimize_acqf_custom_bo
@@ -43,6 +44,7 @@ insertion_config = {
         "vbo": VanillaBayesianOptimization,
         "rs": RandomSearch,
         "cmaes": CMAES,
+        "mpd": MPDOptimizer,
     },
     "optimizer_config": {
         "OptimizerTorch": {"sgd": torch.optim.SGD, "adam": torch.optim.Adam},
