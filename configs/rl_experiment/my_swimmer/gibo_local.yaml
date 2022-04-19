@@ -1,9 +1,9 @@
-method: gibo  # gibo or mpd
+method: mpd  # gibo or mpd
 
 wandb_config:
     project_name: zoofoo-swimmer
     entity: quanwustl
-    name: ig-step  # ig-step
+    name: mpd-step  # ig-step
 
 out_dir: './experiments/rl_experiments/my_swimmer/gibo/'  # Directory for experiment results.
 
@@ -47,7 +47,7 @@ optimizer_config:
         outputscale_constraint:
             constraint: greather_than
             kwargs:
-                lower_bound: 0.001
+                lower_bound: 2
         outputscale_hyperprior:
             prior: normal
             kwargs:

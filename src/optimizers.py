@@ -14,6 +14,11 @@ from src.model import DerivativeExactGPSEModel
 from src.environment_api import EnvironmentObjective
 from src.acquisition_function import GradientInformation, DownhillQuadratic
 from src.model import ExactGPSEModel, DerivativeExactGPSEModel
+from src.utils import plot_along_direction
+
+import matplotlib.pyplot as plt
+
+import os
 
 
 class AbstractOptimizer(ABC):
@@ -596,15 +601,56 @@ class BayesianGradientAscent(AbstractOptimizer):
         self.verbose = verbose
         self.wandb_run = wandb_run
 
+        self.old_f_params = 0
+        self.f_params = 0
+        self.num_successes = 0
+        self.num_moves = 0
+
+    def log_stats(self):
+        if self.f_params > self.old_f_params:
+            self.num_successes += 1
+        self.num_moves += 1
+
+        log_dict = {}
+
+        log_dict["iter"] = self.objective._calls
+
+        log_dict["y"] = self.f_params.item()
+        log_dict["r"] = self.num_successes / self.num_moves
+
+        log_dict["mean_constant"] = self.model.mean_module.constant.item()
+        log_dict["noise_sd"] = self.model.likelihood.noise.detach().sqrt().item()
+        log_dict["outputscale"] = self.model.covar_module.outputscale.item()
+        lengthscales = self.model.covar_module.base_kernel.lengthscale.detach().numpy().flatten().tolist()
+        for l_ind, l in enumerate(lengthscales):
+            log_dict[f"lenghtscale{l_ind}"] = l
+
+        with torch.no_grad():
+            self.model.train()
+
+            mll = gpytorch.mlls.ExactMarginalLogLikelihood(
+                self.model.likelihood, self.model
+            )
+
+            log_dict["mll"] = mll(
+                self.model(self.model.train_inputs[0]), self.model.train_targets
+            ).item()
+
+            self.model.eval()
+
+        self.wandb_run.log(log_dict)
+
+
     def step(self) -> None:
         # Sample with new params from objective and add this to train data.
         # Optionally forget old points (if N > N_max).
+        self.old_f_params = self.f_params
         f_params = self.objective(self.params)
+        self.f_params = f_params
         if self.verbose:
             print(f"Reward of parameters theta_(t-1): {f_params.item():.2f}.")
         if self.wandb_run is not None:
-            log_dict = {"iter": self.objective._calls, "y": f_params.item()}
-            self.wandb_run.log(log_dict)
+            self.log_stats()
         self.model.append_train_data(self.params, f_params)
 
         if (
@@ -633,6 +679,8 @@ class BayesianGradientAscent(AbstractOptimizer):
             self.model.posterior(
                 self.params
             )  # Call this to update prediction strategy of GPyTorch.
+
+        self.acquisition_fcn.update_theta_i(self.params)
 
         acq_value_old = None
         for i in range(self.max_samples_per_iteration):
@@ -800,12 +848,33 @@ class MPDOptimizer(AbstractOptimizer):
     def step(self) -> None:
         # Sample with new params from objective and add this to train data.
         # Optionally forget old points (if N > N_max).
+        def most_likely_uphill_direction(cand_params):
+            pred_grad_mean, pred_covar = self.model.posterior_derivative(cand_params)
+            pred_grad_L = psd_safe_cholesky(pred_covar).unsqueeze(0)
+
+            best_direction = torch.cholesky_solve(
+                pred_grad_mean.unsqueeze(-1), pred_grad_L
+            ).squeeze(-1).squeeze(0)
+            best_direction = torch.nn.functional.normalize(best_direction)
+
+            uphill_probability = Normal(0, 1).cdf(
+                torch.matmul(best_direction, pred_grad_mean.mT).sqrt()
+            )
+
+            # if uphill_probability < 0.5:
+            #     best_direction = -best_direction
+            #     uphill_probability = 1 - uphill_probability
+
+            return best_direction, uphill_probability
+
+
+        self.old_f_params = self.f_params
         f_params = self.objective(self.params)
+        self.f_params = f_params
         if self.verbose:
             print(f"Reward of parameters theta_(t-1): {f_params.item():.2f}.")
         if self.wandb_run is not None:
-            log_dict = {"iter": self.objective._calls, "y": f_params.item()}
-            self.wandb_run.log(log_dict)
+            self.log_stats()
         self.model.append_train_data(self.params, f_params)
 
         if (
@@ -835,8 +904,69 @@ class MPDOptimizer(AbstractOptimizer):
                 self.params
             )  # Call this to update prediction strategy of GPyTorch.
 
+            # delta_x = 0.1
+            #
+            # # direction = torch.zeros_like(self.params)
+            # # direction[..., 0] = 1
+            #
+            # direction = (
+            #     self.model.train_inputs[0][..., torch.argmin(self.model.train_targets), :]
+            #     - self.params
+            # ).detach()
+            #
+            # plot_along_direction(
+            #     self.params.detach().clone(),
+            #     self.model,
+            #     direction,
+            #     self.objective,
+            #     delta_x=delta_x,
+            # )
+            # plt.savefig(f"./experiments/images/min-{delta_x}.png")
+            #
+            # direction = (
+            #     self.model.train_inputs[0][..., torch.argmax(self.model.train_targets), :]
+            #     - self.params
+            # ).detach()
+            #
+            # plot_along_direction(
+            #     self.params.detach().clone(),
+            #     self.model,
+            #     direction,
+            #     self.objective,
+            #     delta_x=delta_x,
+            # )
+            # plt.savefig(f"./experiments/images/max-{delta_x}.png")
+            #
+            # for data_ind in range(10):
+            #     direction = (
+            #         self.model.train_inputs[0][..., -data_ind, :] - self.params
+            #     ).detach()
+            #
+            #     plot_along_direction(
+            #         self.params.detach().clone(),
+            #         self.model,
+            #         direction,
+            #         self.objective,
+            #         delta_x=delta_x,
+            #     )
+            #     plt.savefig(f"./experiments/images/{data_ind}-{delta_x}.png")
+            #
+            # quit()
+
+        self.acquisition_fcn.update_theta_i(self.params)
+
         new_x, acq_value = self.optimize_acqf(self.acquisition_fcn, self.bounds)
         new_y = self.objective(new_x)
+        if self.wandb_run is not None:
+            _, uphill_probability = most_likely_uphill_direction(self.params.detach())
+
+            log_dict = {}
+            log_dict["iter"] = self.objective._calls
+
+            log_dict["alpha*"] = acq_value.item()
+            log_dict["p*"] = uphill_probability.item()
+
+            self.wandb_run.log(log_dict)
 
         # Update training points.
         self.model.append_train_data(new_x, new_y)
@@ -850,6 +980,53 @@ class MPDOptimizer(AbstractOptimizer):
 
         self.model.posterior(self.params)
         self.acquisition_fcn.update_K_xX_dx()
+
+        # if self.objective._calls >= 550:
+        #     delta_x = 0.1
+        #
+        #     direction = (
+        #         self.model.train_inputs[0][..., torch.argmin(self.model.train_targets), :]
+        #         - self.params
+        #     ).detach()
+        #
+        #     plot_along_direction(
+        #         self.params.detach().clone(),
+        #         self.model,
+        #         direction,
+        #         self.objective,
+        #         delta_x=delta_x,
+        #     )
+        #     plt.savefig(f"./experiments/images/min-{delta_x}.png")
+        #
+        #     direction = (
+        #         self.model.train_inputs[0][..., torch.argmax(self.model.train_targets), :]
+        #         - self.params
+        #     ).detach()
+        #
+        #     plot_along_direction(
+        #         self.params.detach().clone(),
+        #         self.model,
+        #         direction,
+        #         self.objective,
+        #         delta_x=delta_x,
+        #     )
+        #     plt.savefig(f"./experiments/images/max-{delta_x}.png")
+        #
+        #     for data_ind in range(10):
+        #         direction = (
+        #             self.model.train_inputs[0][..., -data_ind, :] - self.params
+        #         ).detach()
+        #
+        #         plot_along_direction(
+        #             self.params.detach().clone(),
+        #             self.model,
+        #             direction,
+        #             self.objective,
+        #             delta_x=delta_x,
+        #         )
+        #         plt.savefig(f"./experiments/images/{data_ind}-{delta_x}.png")
+        #
+        #     quit()
 
         with torch.no_grad():
             # self.optimizer_torch.zero_grad()
@@ -871,35 +1048,19 @@ class MPDOptimizer(AbstractOptimizer):
 
             tmp_params = self.params.detach().clone()
 
-            def most_likely_downhill_direction(cand_params):
-                pred_grad_mean, pred_covar = self.model.posterior_derivative(cand_params)
-                pred_grad_L = psd_safe_cholesky(pred_covar).unsqueeze(0)
-
-                best_direction = torch.cholesky_solve(
-                    pred_grad_mean.unsqueeze(-1), pred_grad_L
-                ).squeeze(-1).squeeze(0)
-                best_direction = torch.nn.functional.normalize(best_direction)
-
-                downhill_probability = Normal(0, 1).cdf(
-                    torch.matmul(best_direction, pred_grad_mean.mT).sqrt()
-                )
-
-                if downhill_probability < 0.5:
-                    best_direction = -best_direction
-                    downhill_probability = 1 - downhill_probability
-
-                return best_direction, downhill_probability
-
-            v_star, p_star = most_likely_downhill_direction(tmp_params)
-            while p_star >= 0.65:
+            v_star, p_star = most_likely_uphill_direction(tmp_params)
+            num_iters = 0
+            while p_star >= 0.65 and num_iters <= 10_000:
                 if False:
                     # print("at", tmp_params.detach().numpy().flatten())
                     # print("direction", v_star.detach().numpy().flatten())
                     print("p", p_star.item())
+                    print(tmp_params)
                     print()
 
                 tmp_params += v_star.squeeze(0) * 0.001
-                v_star, p_star = most_likely_downhill_direction(tmp_params)
+                v_star, p_star = most_likely_uphill_direction(tmp_params)
+                num_iters += 1
 
             self.params.data = tmp_params
 

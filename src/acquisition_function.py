@@ -5,6 +5,9 @@ import gpytorch
 import botorch
 
 from src.cholesky import one_step_cholesky
+from src.utils import plot_along_direction
+
+import matplotlib.pyplot as plt
 
 from gpytorch.utils.cholesky import psd_safe_cholesky
 
@@ -55,7 +58,7 @@ class GradientInformation(botorch.acquisition.AnalyticAcquisitionFunction):
         lengthscale = self.model.covar_module.base_kernel.lengthscale.detach()
         return (
             -torch.eye(self.model.D, device=X.device)
-            / lengthscale
+            / lengthscale ** 2
             @ (
                 (x.view(n, 1, self.model.D) - X.view(1, N, self.model.D))
                 * K_xX.view(n, N, 1)
@@ -142,33 +145,19 @@ class DownhillQuadratic(GradientInformation):
 
         # get K_xX_dx
         K_xθ_dx = self._get_KxX_dx(self.theta_i.view(-1, D), x)
-        K_xX_dx = sigma_f * torch.cat([self.K_xX_dx_part, K_xθ_dx], dim=-1)
+        K_xX_dx = torch.cat([self.K_xX_dx_part, K_xθ_dx], dim=-1)
 
         # Compute_variance.
         covar_xstar_xstar_condx = (
             self.model._get_Kxx_dx2() - K_xX_dx @ K_XX_inv @ K_xX_dx.mT
         )
 
-        L_xstar_xstar_condx = psd_safe_cholesky(covar_xstar_xstar_condx)
-
-        # try:
-        #     L_xstar_xstar_condx = psd_safe_cholesky(covar_xstar_xstar_condx)
-        # except:
-        #     torch.save(self.model.train_inputs[0], "notebooks/Misc/train_x.pt")
-        #     torch.save(self.model.train_targets, "notebooks/Misc/train_y.pt")
-        #
-        #     torch.save(self.theta_i, "notebooks/Misc/theta_i.pt")
-        #     torch.save(x, "notebooks/Misc/x.pt")
-        #
-        #     torch.save(self.model.covar_module.base_kernel.lengthscale.detach(), "notebooks/Misc/lengthscale.pt")
-        #     torch.save(self.model.covar_module.outputscale.detach(), "notebooks/Misc/outputscale.pt")
-        #     torch.save(self.model.likelihood.noise.detach(), "notebooks/Misc/noise.pt")
-        #     quit()
-        #
+        # if self.model.train_inputs[0].size(0) == 3:
         #     from IPython.core.debugger import set_trace
         #     set_trace()
 
-        covar_xstar_x = sigma_f * (
+        L_xstar_xstar_condx = psd_safe_cholesky(covar_xstar_xstar_condx)
+        covar_xstar_x = (
             K_xθ_dx - self.K_xX_dx_part @ self.model.get_KXX_inv() @ K_Xθ
         )
         covar_x_x = K_θθ - K_Xθ.mT @ self.model.get_KXX_inv() @ K_Xθ
@@ -181,8 +170,6 @@ class DownhillQuadratic(GradientInformation):
             self.mean_d.unsqueeze(-1), L_xstar_xstar_condx, upper=False
         ).solution
         LinvA = torch.triangular_solve(A, L_xstar_xstar_condx, upper=False).solution
-
-        # raise ValueError
 
         return torch.atleast_1d(LinvMu.square().sum() + LinvA.square().sum())
 

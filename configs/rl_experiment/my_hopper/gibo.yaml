@@ -3,7 +3,7 @@ method: gibo
 wandb_config:
     project_name: zoofoo-hopper
     entity: quanwustl
-    name: ig-step  # ig-step
+    name: ig-iter-outputscale_1  # ig-step
 
 out_dir: './experiments/rl_experiments/hopper/gibo/'  # Directory for experiment results.
 
@@ -48,7 +48,7 @@ optimizer_config:
         outputscale_constraint:
             constraint: greather_than
             kwargs:
-                lower_bound: 0.001
+                lower_bound: 1
         outputscale_hyperprior:
             prior: normal
             kwargs:
