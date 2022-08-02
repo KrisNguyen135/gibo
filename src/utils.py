@@ -13,14 +13,6 @@ def plot_along_direction(x, y, model, direction, obj_func, delta_x=0.01, num_ste
     sample_values = torch.tensor(
         [obj_func(model.train_inputs[0][i]) for i in range(model.train_inputs[0].shape[-2])]
     )
-    if sample_values.size(-1) == 1:
-        normalize_fn = lambda x: x
-    else:
-        sample_mean = sample_values.mean()
-        sample_sd = sample_values.std(unbiased=False) + 1e-10
-        normalize_fn = lambda x: (x - sample_mean) / sample_sd
-
-        normalize_fn = lambda x: x
 
     print(model.covar_module.base_kernel.lengthscale.detach().numpy())
     print(model.covar_module.outputscale.item())
@@ -120,7 +112,7 @@ def plot_along_direction(x, y, model, direction, obj_func, delta_x=0.01, num_ste
 
     plt.scatter(
         0,
-        normalize_fn(y),
+        y,
         label="incumbent",
         c="k",
         marker="x",
