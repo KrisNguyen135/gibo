@@ -1,9 +1,9 @@
-method: gibo
+method: mpd
 
 wandb_config:
     project_name: zoofoo-hopperv3
     entity: quanwustl
-    name: ig-iter-outputscale_1  # ig-step
+    name: ig-step  # ig-step
 
 out_dir: './experiments/rl_experiments/hopper/gibo/'  # Directory for experiment results.
 
@@ -18,10 +18,10 @@ mlp:
         scale: 1000
 
 trials: 1
-seed: 0
+seed: 7
 # Either choose max_iterations or max_objective_calls unequal None.
 max_iterations:
-max_objective_calls: 2000
+max_objective_calls: 200000
 
 optimizer_config:
     max_samples_per_iteration: 1

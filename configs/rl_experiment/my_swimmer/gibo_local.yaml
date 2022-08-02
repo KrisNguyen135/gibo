@@ -1,9 +1,9 @@
-method: mpd  # gibo or mpd
+method: mpd
 
 wandb_config:
     project_name: zoofoo-swimmer
     entity: quanwustl
-    name: mpd-step  # ig-step
+    name: mpd-iter
 
 out_dir: './experiments/rl_experiments/my_swimmer/gibo/'  # Directory for experiment results.
 
@@ -21,7 +21,7 @@ trials: 1
 seed: 0
 # Either choose max_iterations or max_objective_calls unequal None.
 max_iterations:
-max_objective_calls: 1000
+max_objective_calls: 100000
 
 optimizer_config:
     max_samples_per_iteration: 1
@@ -47,7 +47,7 @@ optimizer_config:
         outputscale_constraint:
             constraint: greather_than
             kwargs:
-                lower_bound: 2
+                lower_bound: 0.001
         outputscale_hyperprior:
             prior: normal
             kwargs:

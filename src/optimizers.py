@@ -686,6 +686,34 @@ class BayesianGradientAscent(AbstractOptimizer):
         for i in range(self.max_samples_per_iteration):
             # Optimize acquistion function and get new observation.
             new_x, acq_value = self.optimize_acqf(self.acquisition_fcn, self.bounds)
+
+            # from IPython.core.debugger import set_trace
+            # set_trace()
+
+            bug = False
+
+            distances = np.loadtxt("distance.txt")
+            acq_func_vals = np.loadtxt("acq_func_val.txt")
+
+            fig, ax = plt.subplots(2, 1, figsize=(8, 8), sharex=True)
+
+            ax[0].plot(distances)
+            ax[0].set_ylabel("distance from incumbent")
+
+            if bug:
+                ax[1].plot(acq_func_vals / self.model.covar_module.base_kernel.lengthscale.view(-1)[0].item() ** 2)
+            else:
+                ax[1].plot(acq_func_vals)
+            ax[1].set_ylabel("acq func value")
+
+            plt.show()
+
+            # import os
+            # os.remove("distance.txt")
+            # os.remove("variance.txt")
+
+            quit()
+
             new_y = self.objective(new_x)
 
             # Update training points.
@@ -731,7 +759,20 @@ class BayesianGradientAscent(AbstractOptimizer):
             else:
                 self.params.grad[:] = params_grad  # Define as gradient ascent.
             self.optimizer_torch.step()
-            self.iteration += 1
+
+        ### mu
+        # tmp_params, maximized_mean = botorch.optim.optimize_acqf(
+        #     acq_function=botorch.acquisition.analytic.PosteriorMean(model=self.model),
+        #     bounds=torch.vstack([self.params.detach() - 10, self.params.detach() + 10]),
+        #     q=1,
+        #     num_restarts=1,
+        #     batch_initial_conditions=self.params.detach()
+        # )
+        # tmp_params = tmp_params.unsqueeze(0)
+        #
+        # self.params.data = tmp_params
+
+        self.iteration += 1
 
         if (
             type(self.objective._func) is EnvironmentObjective
@@ -844,6 +885,45 @@ class MPDOptimizer(AbstractOptimizer):
         assert self.max_samples_per_iteration == 1
         self.verbose = verbose
         self.wandb_run = wandb_run
+
+        self.old_f_params = 0
+        self.f_params = 0
+        self.num_successes = 0
+        self.num_moves = 0
+
+    def log_stats(self):
+        if self.f_params > self.old_f_params:
+            self.num_successes += 1
+        self.num_moves += 1
+
+        log_dict = {}
+
+        log_dict["iter"] = self.objective._calls
+
+        log_dict["y"] = self.f_params.item()
+        log_dict["r"] = self.num_successes / self.num_moves
+
+        log_dict["mean_constant"] = self.model.mean_module.constant.item()
+        log_dict["noise_sd"] = self.model.likelihood.noise.detach().sqrt().item()
+        log_dict["outputscale"] = self.model.covar_module.outputscale.item()
+        lengthscales = self.model.covar_module.base_kernel.lengthscale.detach().numpy().flatten().tolist()
+        for l_ind, l in enumerate(lengthscales):
+            log_dict[f"lenghtscale{l_ind}"] = l
+
+        with torch.no_grad():
+            self.model.train()
+
+            mll = gpytorch.mlls.ExactMarginalLogLikelihood(
+                self.model.likelihood, self.model
+            )
+
+            log_dict["mll"] = mll(
+                self.model(self.model.train_inputs[0]), self.model.train_targets
+            ).item()
+
+            self.model.eval()
+
+        self.wandb_run.log(log_dict)
 
     def step(self) -> None:
         # Sample with new params from objective and add this to train data.
@@ -981,54 +1061,96 @@ class MPDOptimizer(AbstractOptimizer):
         self.model.posterior(self.params)
         self.acquisition_fcn.update_K_xX_dx()
 
-        # if self.objective._calls >= 550:
-        #     delta_x = 0.1
-        #
-        #     direction = (
-        #         self.model.train_inputs[0][..., torch.argmin(self.model.train_targets), :]
-        #         - self.params
-        #     ).detach()
-        #
-        #     plot_along_direction(
-        #         self.params.detach().clone(),
-        #         self.model,
-        #         direction,
-        #         self.objective,
-        #         delta_x=delta_x,
-        #     )
-        #     plt.savefig(f"./experiments/images/min-{delta_x}.png")
-        #
-        #     direction = (
-        #         self.model.train_inputs[0][..., torch.argmax(self.model.train_targets), :]
-        #         - self.params
-        #     ).detach()
-        #
-        #     plot_along_direction(
-        #         self.params.detach().clone(),
-        #         self.model,
-        #         direction,
-        #         self.objective,
-        #         delta_x=delta_x,
-        #     )
-        #     plt.savefig(f"./experiments/images/max-{delta_x}.png")
-        #
-        #     for data_ind in range(10):
-        #         direction = (
-        #             self.model.train_inputs[0][..., -data_ind, :] - self.params
-        #         ).detach()
-        #
-        #         plot_along_direction(
-        #             self.params.detach().clone(),
-        #             self.model,
-        #             direction,
-        #             self.objective,
-        #             delta_x=delta_x,
-        #         )
-        #         plt.savefig(f"./experiments/images/{data_ind}-{delta_x}.png")
-        #
-        #     quit()
+        if (self.objective._calls > 500) and (self.objective._calls % 100 == 0):
+            delta_x = 0.1 / 5
+
+            direction = (
+                self.model.train_inputs[0][..., torch.argmin(self.model.train_targets), :]
+                - self.params
+            ).detach()
+
+            print(self.params.detach().clone())
+            print(direction)
+
+            quit()
+
+            plot_along_direction(
+                self.params.detach().clone(),
+                self.f_params.detach().clone(),
+                self.model,
+                direction,
+                self.objective,
+                delta_x=delta_x,
+            )
+            plt.savefig(f"./experiments/images/min-{delta_x}-{self.iteration}.png")
+
+            # plot_along_direction(
+            #     self.params.detach().clone(),
+            #     self.f_params.detach().clone(),
+            #     self.model,
+            #     direction,
+            #     self.objective,
+            #     delta_x=delta_x,
+            #     num_obj_samples=1,
+            # )
+            # plt.savefig(f"./experiments/images/min-{delta_x}-{self.iteration}-line.png")
+
+            direction = (
+                self.model.train_inputs[0][..., torch.argmax(self.model.train_targets), :]
+                - self.params
+            ).detach()
+
+            plot_along_direction(
+                self.params.detach().clone(),
+                self.f_params.detach().clone(),
+                self.model,
+                direction,
+                self.objective,
+                delta_x=delta_x,
+            )
+            plt.savefig(f"./experiments/images/max-{delta_x}-{self.iteration}.png")
+
+            # plot_along_direction(
+            #     self.params.detach().clone(),
+            #     self.f_params.detach().clone(),
+            #     self.model,
+            #     direction,
+            #     self.objective,
+            #     delta_x=delta_x,
+            #     num_obj_samples=1,
+            # )
+            # plt.savefig(f"./experiments/images/max-{delta_x}-{self.iteration}-line.png")
+
+            for data_ind in range(10):
+                direction = (
+                    self.model.train_inputs[0][..., -data_ind, :] - self.params
+                ).detach()
+
+                plot_along_direction(
+                    self.params.detach().clone(),
+                    self.f_params.detach().clone(),
+                    self.model,
+                    direction,
+                    self.objective,
+                    delta_x=delta_x,
+                )
+                plt.savefig(f"./experiments/images/{data_ind}-{delta_x}-{self.iteration}.png")
+
+                # plot_along_direction(
+                #     self.params.detach().clone(),
+                #     self.f_params.detach().clone(),
+                #     self.model,
+                #     direction,
+                #     self.objective,
+                #     delta_x=delta_x,
+                #     num_obj_samples=1,
+                # )
+                # plt.savefig(f"./experiments/images/{data_ind}-{delta_x}-{self.iteration}-line.png")
+
+            # quit()
 
         with torch.no_grad():
+            ## step
             # self.optimizer_torch.zero_grad()
             # mean_d, variance_d = self.model.posterior_derivative(self.params)
             # params_grad = -mean_d.view(1, self.D)
@@ -1046,6 +1168,7 @@ class MPDOptimizer(AbstractOptimizer):
             #     self.params.grad[:] = params_grad  # Define as gradient ascent.
             # self.optimizer_torch.step()
 
+            ## iter
             tmp_params = self.params.detach().clone()
 
             v_star, p_star = most_likely_uphill_direction(tmp_params)
@@ -1064,7 +1187,19 @@ class MPDOptimizer(AbstractOptimizer):
 
             self.params.data = tmp_params
 
-            self.iteration += 1
+        ### mu
+        # tmp_params, maximized_mean = botorch.optim.optimize_acqf(
+        #     acq_function=botorch.acquisition.analytic.PosteriorMean(model=self.model),
+        #     bounds=torch.vstack([self.params.detach() - 10, self.params.detach() + 10]),
+        #     q=1,
+        #     num_restarts=1,
+        #     batch_initial_conditions=self.params.detach()
+        # )
+        # tmp_params = tmp_params.unsqueeze(0)
+        #
+        # self.params.data = tmp_params
+
+        self.iteration += 1
 
         if (
             type(self.objective._func) is EnvironmentObjective

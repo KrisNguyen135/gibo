@@ -136,3 +136,5 @@ experiments/
 gym/
 mujoco-py/
 notebooks/
+
+*.txt

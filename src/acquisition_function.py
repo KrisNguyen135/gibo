@@ -109,6 +109,14 @@ class GradientInformation(botorch.acquisition.AnalyticAcquisitionFunction):
             variance_d = -K_xX_dx @ K_XX_inv @ K_xX_dx.transpose(1, 2)
             variances.append(torch.trace(variance_d.view(D, D)).view(1))
 
+            with torch.no_grad():
+                distance = torch.norm(theta - x).item()
+
+                with open("distance.txt", "a") as f:
+                    f.write(f"{distance}\n")
+                with open("variance.txt", "a") as f:
+                    f.write(f"{variances[-1].item()}\n")
+
         return -torch.cat(variances, dim=0)
 
 
@@ -170,6 +178,14 @@ class DownhillQuadratic(GradientInformation):
             self.mean_d.unsqueeze(-1), L_xstar_xstar_condx, upper=False
         ).solution
         LinvA = torch.triangular_solve(A, L_xstar_xstar_condx, upper=False).solution
+
+        with torch.no_grad():
+            distance = torch.norm(self.theta_i.view(-1, D) - x).item()
+
+            with open("distance.txt", "a") as f:
+                f.write(f"{distance}\n")
+            with open("acq_func_val.txt", "a") as f:
+                f.write(f"{(LinvMu.square().sum() + LinvA.square().sum()).item()}\n")
 
         return torch.atleast_1d(LinvMu.square().sum() + LinvA.square().sum())
 
